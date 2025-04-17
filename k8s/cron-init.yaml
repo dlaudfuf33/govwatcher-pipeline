@@ -1,0 +1,15 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: govwatch-init
+spec:
+  template:
+    spec:
+      containers:
+        - name: govwatch
+          image: docker.io/dlaudfuf33/govwatch:latest
+          args: ["init"]
+          envFrom:
+            - secretRef:
+                name: govwatch-env
+      restartPolicy: Never

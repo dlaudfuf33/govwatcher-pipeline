@@ -1,0 +1,18 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: govwatch-10min
+spec:
+  schedule: "*/10 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: govwatch
+              image: docker.io/dlaudfuf33/govwatch:latest
+              args: ["update", "--days", "1"]
+              envFrom:
+                - secretRef:
+                    name: govwatch-env
+          restartPolicy: Never
