@@ -7,12 +7,13 @@ import (
 	"net/http"
 	urlpkg "net/url"
 	"strings"
+	"time"
 
 	model "gwatch-data-pipeline/internal/model"
 )
 
 // 의견 본문 요청 API
-func FetchOpinionContent(billID string, opnNo string, session model.SessionInfo) (string, error) {
+func FetchOpinionContent(billID string, opnNo string, session model.SessionInfo) (string, time.Time, error) {
     form := urlpkg.Values{
         "lgsltPaId": {billID},
         "opnNo":     {opnNo},
@@ -20,7 +21,7 @@ func FetchOpinionContent(billID string, opnNo string, session model.SessionInfo)
 
     req, err := http.NewRequest("POST", "https://pal.assembly.go.kr/napal/lgsltpa/lgsltpaOpn/findOneLgsltpaOpnById.json", strings.NewReader(form.Encode()))
     if err != nil {
-        return "",err
+        return "",time.Time{},err
     }
 
     req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -41,29 +42,35 @@ func FetchOpinionContent(billID string, opnNo string, session model.SessionInfo)
 
     resp, err := http.DefaultClient.Do(req)
     if err != nil {
-        return "", err
+        return "",time.Time{},err
     }
     defer resp.Body.Close()
 
     if resp.StatusCode != http.StatusOK {
         body, _ := io.ReadAll(resp.Body)
-        return "",fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+        return "",time.Time{},fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
     }
 
     bodyBytes, err := io.ReadAll(resp.Body)
     if err != nil {
-        return "", err
+        return "",time.Time{},err
     }
     
     var result struct {
         Result struct {
             Cn string `json:"cn"`
+            OpnRgDt  string `json:"opnRgDt"`
         } `json:"result"`
     }
-    
-    if err := json.Unmarshal(bodyBytes, &result); err != nil {
-        return "", err
-    }
+    fmt.Println("📦 response :", string(bodyBytes))
 
-    return result.Result.Cn, nil
+    if err := json.Unmarshal(bodyBytes, &result); err != nil {
+        return "",time.Time{}, err
+    }
+    layout := "2006-01-02"
+    parsedTime, err := time.Parse(layout, result.Result.OpnRgDt)
+    if err != nil {
+        return "", time.Time{}, fmt.Errorf("opnRgDt parsing error: %v", err)
+    }
+    return result.Result.Cn, parsedTime, nil
 }

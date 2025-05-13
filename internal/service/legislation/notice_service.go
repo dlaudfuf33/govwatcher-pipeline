@@ -16,6 +16,7 @@ import (
 	client "gwatch-data-pipeline/internal/api/legislation"
 	"gwatch-data-pipeline/internal/api/util"
 	"gwatch-data-pipeline/internal/logging"
+	"gwatch-data-pipeline/internal/model/bill"
 	model "gwatch-data-pipeline/internal/model/legislation"
 )
 
@@ -68,25 +69,23 @@ func processSingleBill(bill BillInfo, db *gorm.DB) error {
 	startInner := time.Now()
 	logging.Infof("🔍 Fetching notice for bill: %s (%d comments)", bill.BillNo, bill.CommentCount)
 
-	billID, err := client.GetBillIDByNo(bill.BillNo, db)
-	if err != nil {
-		if billID == "" {
-			logging.Warnf("Fallback to OpenAPI for bill_no=%s", bill.BillNo)
-			billID, err = billAPI.FetchAndInsertBillFromOpenAPI(bill.BillNo, db)
-		}
-		if err != nil {
-			logging.Errorf("Failed to get bill_id via fallback: %v", err)
+	billEntity, err := client.GetBillEntityByNo(bill.BillNo, db)
+	if err != nil || billEntity == nil {
+		logging.Warnf("Fallback to OpenAPI for bill_no=%s", bill.BillNo)
+		billEntity, err = billAPI.FetchAndInsertBillFromOpenAPI(bill.BillNo, db)
+		if err != nil || billEntity == nil {
+			logging.Errorf("Failed to get bill entity via fallback: %v", err)
 			return err
 		}
 	}
-	url := fmt.Sprintf("https://pal.assembly.go.kr/napal/lgsltpa/lgsltpaOpn/list.do?lgsltPaId=%s&searchConClosed=0", billID)
+	url := fmt.Sprintf("https://pal.assembly.go.kr/napal/lgsltpa/lgsltpaOpn/list.do?lgsltPaId=%s&searchConClosed=0", billEntity.BillID)
 	noticePeriod, commentsCount, err := client.FetchNoticePeriodFast(url)
 	if err != nil {
 		logging.Errorf("Failed to fetch notice period: %v", err)
 		return err
 	}
 
-	err = upsertLegislativeNotice(db, billID, noticePeriod, commentsCount)
+	err = upsertLegislativeNotice(db, billEntity, noticePeriod, commentsCount)
 	if err != nil {
 		logging.Errorf("Failed to update legislative notice: %v", err)
 	}
@@ -135,7 +134,7 @@ func parseCommentCount(str string) int {
 }
 
 // legislative_notice을 추가하거나 업데이트하는 함수
-func upsertLegislativeNotice(db *gorm.DB, billID string, noticePeriod string, commentCount int) error {
+func upsertLegislativeNotice(db *gorm.DB, billEntity *bill.Bill, noticePeriod string, opinionCount int) error {
 	var startDate, endDate time.Time
 	parts := strings.Split(noticePeriod, "~")
 	if len(parts) == 2 {
@@ -156,14 +155,14 @@ func upsertLegislativeNotice(db *gorm.DB, billID string, noticePeriod string, co
 	}
 
 	notice := model.LegislativeNotice{
-		BillID:        billID,
-		CommentsCount: commentCount,
-		StartDate:     startDate,
-		EndDate:       endDate,
-		CommentsURL:   fmt.Sprintf("https://pal.assembly.go.kr/napal/lgsltpa/lgsltpaOpn/list.do?lgsltPaId=%s&searchConClosed=0", billID),
+		BillID:       billEntity.ID,
+		OpinionCount: opinionCount,
+		StartDate:    &startDate,
+		EndDate:      &endDate,
+		OpinionUrl:   fmt.Sprintf("https://pal.assembly.go.kr/napal/lgsltpa/lgsltpaOpn/list.do?lgsltPaId=%s&searchConClosed=0", billEntity.BillID),
 	}
 
-	logging.Infof("💾 Saving notice to DB for bill_id=%s with start=%v end=%v", notice.BillID, startDate, endDate)
+	logging.Infof("💾 Saving notice to DB for bill_id=%d with start=%v end=%v", notice.BillID, startDate, endDate)
 
 	if err := db.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "bill_id"}},
@@ -173,6 +172,6 @@ func upsertLegislativeNotice(db *gorm.DB, billID string, noticePeriod string, co
 		return err
 	}
 
-	logging.Infof("Legislative notice upserted successfully: %s", notice.BillID)
+	logging.Infof("Legislative notice upserted successfully: %d", notice.BillID)
 	return nil
 }

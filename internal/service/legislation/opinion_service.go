@@ -19,7 +19,7 @@ import (
 	modelLegislation "gwatch-data-pipeline/internal/model/legislation"
 )
 
-// 입법예고 테이블에서 유효한 데이터 조회 후 병렬로 의견 다운로드를 수행하는 진입점 함수
+// 🧹 유효한 입법예고 조회 후 병렬로 의견 다운로드
 func ImportOpinionCommentsFromLatestFile(db *gorm.DB) error {
 	start := time.Now()
 
@@ -30,15 +30,25 @@ func ImportOpinionCommentsFromLatestFile(db *gorm.DB) error {
 	if len(notices) == 0 {
 		return nil
 	}
-	sampleBillID := notices[0].BillID
-	session, err := PrepareSession(sampleBillID)
+	var billID string
+	err = db.Raw("SELECT bill_id FROM bills WHERE id = ?", notices[0].BillID).Scan(&billID).Error
+	if err != nil || billID == "" {
+		return fmt.Errorf("failed to find bill_id for notice id=%d: %v", notices[0].BillID, err)
+	}
+	session, err := PrepareSession(billID)
 	if err != nil {
 		return err
 	}
 
 	var billIDs []string
 	for _, n := range notices {
-		billIDs = append(billIDs, n.BillID)
+		var billID string
+		err := db.Raw("SELECT bill_id FROM bills WHERE id = ?", n.BillID).Scan(&billID).Error
+		if err != nil || billID == "" {
+			logging.Warnf("Skipping notice id=%d: failed to find bill_id: %v", n.BillID, err)
+			continue
+		}
+		billIDs = append(billIDs, billID)
 	}
 
 	failed := downloadWithWorkers(billIDs, session, 3)
@@ -53,25 +63,37 @@ func ImportOpinionCommentsFromLatestFile(db *gorm.DB) error {
 	return nil
 }
 
-func ImportOpinionCommentsFromLatestFileWithinDays(db *gorm.DB,withinDays int) error {
+// 🧹 N일 이내 유효 입법예고 조회 후 병렬 의견 다운로드
+func ImportOpinionCommentsFromLatestFileWithinDays(db *gorm.DB, withinDays int) error {
 	start := time.Now()
 
-	notices, err := getImminentValidNotices(db,withinDays)
+	notices, err := getImminentValidNotices(db, withinDays)
 	if err != nil {
 		return err
 	}
 	if len(notices) == 0 {
 		return nil
 	}
-	sampleBillID := notices[0].BillID
-	session, err := PrepareSession(sampleBillID)
+
+	var billID string
+	err = db.Raw("SELECT bill_id FROM bills WHERE id = ?", notices[0].BillID).Scan(&billID).Error
+	if err != nil || billID == "" {
+		return fmt.Errorf("failed to find bill_id for notice id=%d: %v", notices[0].BillID, err)
+	}
+	session, err := PrepareSession(billID)
 	if err != nil {
 		return err
 	}
 
 	var billIDs []string
 	for _, n := range notices {
-		billIDs = append(billIDs, n.BillID)
+		var billID string
+		err := db.Raw("SELECT bill_id FROM bills WHERE id = ?", n.BillID).Scan(&billID).Error
+		if err != nil || billID == "" {
+			logging.Warnf("Skipping notice id=%d: failed to find bill_id: %v", n.BillID, err)
+			continue
+		}
+		billIDs = append(billIDs, billID)
 	}
 
 	failed := downloadWithWorkers(billIDs, session, 3)
@@ -86,8 +108,7 @@ func ImportOpinionCommentsFromLatestFileWithinDays(db *gorm.DB,withinDays int) e
 	return nil
 }
 
-
-// DB에서 현재 시각 기준 유효한 입법예고 데이터를 조회하는 함수
+// 🧹 DB에서 현재 시각 기준 유효 입법예고 조회
 func getValidNotices(db *gorm.DB) ([]modelLegislation.LegislativeNotice, error) {
 	var notices []modelLegislation.LegislativeNotice
 	now := time.Now()
@@ -97,47 +118,52 @@ func getValidNotices(db *gorm.DB) ([]modelLegislation.LegislativeNotice, error) 
 	return notices, nil
 }
 
-// DB에서 현재 시각 기준 종료 N일 남은 입법예고 데이터를 조회하는 함수
-func getImminentValidNotices(db *gorm.DB,withinDays int) ([]modelLegislation.LegislativeNotice, error) {
+// 🧹 DB에서 종료 N일 이내 유효 입법예고 조회
+func getImminentValidNotices(db *gorm.DB, withinDays int) ([]modelLegislation.LegislativeNotice, error) {
 	var notices []modelLegislation.LegislativeNotice
 	now := time.Now()
 	until := now.AddDate(0, 0, withinDays)
 	if err := db.Where("end_date >= ? AND end_date <= ?", now, until).
-	Find(&notices).Error; err != nil {
+		Find(&notices).Error; err != nil {
 		return nil, fmt.Errorf("failed to query valid legislative notices: %v", err)
 	}
 	return notices, nil
 }
 
-
-// DB에서 현재 시각 기준 유효한 입법예고 ID 조회하는 함수
+// 🧹 DB에서 현재 시각 기준 유효 입법예고 ID 조회
 func GetValidNoticeID(db *gorm.DB) (LegislativeNoticeID string, err error) {
 	var notice modelLegislation.LegislativeNotice
 	now := time.Now()
-	if err := db.Where("end_date >= ? limit 1", now).Find(&notice).Error; err != nil {
+	if err := db.Where("end_date >= ?", now).Order("end_date ASC").Limit(1).Find(&notice).Error; err != nil {
 		return "", fmt.Errorf("failed to query valid legislative notices: %v", err)
 	}
-	return notice.BillID, nil
+
+	var billID string
+	err = db.Raw("SELECT bill_id FROM bills WHERE id = ?", notice.BillID).Scan(&billID).Error
+	if err != nil || billID == "" {
+		return "", fmt.Errorf("failed to fetch associated bill_id for notice id=%d: %v", notice.BillID, err)
+	}
+	return billID, nil
 }
 
-// chromedp 세션을 초기화하고 CSRF 토큰 및 쿠키를 수집하는 함수
+// 🔥 세션 준비 (쿠키 + 토큰)
 func PrepareSession(billID string) (model.SessionInfo, error) {
 	ctx, cancel := legislation.CreateChromedpContext()
 
-	// 1. warm-up → 필수!
+	// 1. warm-up → 필수! 🔥
 	if err := legislation.WarmUpSessionWithViewPage(ctx, billID); err != nil {
 		cancel()
 		return model.SessionInfo{}, fmt.Errorf("Failed to warm up session: %v", err)
 	}
 
-	// 2. 쿠키 추출 
+	// 2. 쿠키 추출 🍪
 	cookies, err := legislation.GetCookiesForRequest(ctx)
 	if err != nil {
 		cancel()
 		return model.SessionInfo{}, fmt.Errorf("Failed to retrieve cookies: %v", err)
 	}
 
-	// 3. CSRF 토큰 추출 (view 페이지에서)
+	// 3. CSRF 토큰 추출 (view 페이지에서) 🔐
 	viewURL := "https://pal.assembly.go.kr/napal/lgsltpa/lgsltpaOpn/list.do?lgsltPaId=" + billID + "&searchConClosed=0"
 	csrfToken, err := legislation.FetchCSRFToken(ctx, viewURL)
 	if err != nil {
@@ -153,7 +179,7 @@ func PrepareSession(billID string) (model.SessionInfo, error) {
 	}, nil
 }
 
-// 워커풀을 구성하여 각 billID에 대해 의견 엑셀 파일을 병렬 다운로드하는 함수
+// 🛠️ 워커풀로 병렬 의견 엑셀 다운로드
 func downloadWithWorkers(billIDs []string, session model.SessionInfo, maxWorkers int) []string {
 	jobs := make(chan string, len(billIDs))
 	var wg sync.WaitGroup
@@ -184,14 +210,15 @@ func downloadWithWorkers(billIDs []string, session model.SessionInfo, maxWorkers
 	return failed
 }
 
+// 📥 다운로드된 의견 파일 읽고 병렬 DB 저장
 func ParseAndInsertOpinionsFromDownloads(db *gorm.DB) {
-	opinionWorkers := 10;
+	opinionWorkers := 20
 	tempBillID, err := GetValidNoticeID(db)
 
 	session, err := PrepareSession(tempBillID)
 	if err != nil {
 		logging.Errorf("failed prepareSession %v:", err)
-		return 
+		return
 	}
 
 	files, err := filepath.Glob("downloads/opinion/*.xlsx")
@@ -221,11 +248,37 @@ func ParseAndInsertOpinionsFromDownloads(db *gorm.DB) {
 		}
 
 		type job struct {
-			billID     string
-			opnNo      string
-			subject    string
-			author     string
-			createdAt  string
+			billID    string
+			opnNo     string
+			subject   string
+			author    string
+			createdAt string
+		}
+
+		// 🗂️ 파일명에서 bill_id 추출
+		base := filepath.Base(file)
+		billID := strings.Split(base, ",")[0]
+
+		// 🔍 bill_no로 bill_id 조회
+		var bID uint64
+		err = db.Raw("SELECT id FROM bills WHERE bill_id = ?", billID).Scan(&bID).Error
+		if err != nil || billID == "" {
+			logging.Warnf("Skipping file %s: failed to find bills.id for billID %s: %v", base, billID, err)
+			continue
+		}
+
+		// 🔍 bills.id로 notice_id 조회
+		var noticeID uint64
+		err = db.Raw("SELECT id FROM legislative_notices WHERE bill_id = ?", bID).Scan(&noticeID).Error
+		if err != nil {
+			logging.Warnf("Skipping file %s: failed to find legislative_notice id for bill_id %d: %v", base, bID, err)
+			continue
+		}
+
+		maxOpnNo, err := GetMaxOpnNoByNoticeID(db, noticeID)
+		if err != nil {
+			logging.Errorf("Failed to get max opnNo for noticeID %d: %v", noticeID, err)
+			maxOpnNo = 0
 		}
 
 		var wg sync.WaitGroup
@@ -239,39 +292,39 @@ func ParseAndInsertOpinionsFromDownloads(db *gorm.DB) {
 				for j := range jobs {
 					logging.Debugf("👨🏻‍🔧 Worker %d processing opinion %s", id, j.opnNo)
 
-					parsedAt, err := time.Parse("2006-01-02", j.createdAt)
-					if err != nil {
-						logging.Warnf("Invalid createdAt format for %s: %s", j.opnNo, j.createdAt)
-						parsedAt = time.Now()
-					}
-
 					isAnonymous := inferAnonymous(j.subject, "")
 					content := ""
-					if isAnonymous == nil || !*isAnonymous {
-						content, err = legislation.FetchOpinionContent(j.billID, j.opnNo, session)
+					parsedCreatedAt, err := time.Parse("2006-01-02", j.createdAt)
+
+					if isAnonymous != nil && !*isAnonymous {
+						contentFetched, fetchedCreatedAtStr, err := legislation.FetchOpinionContent(j.billID, j.opnNo, session)
 						if err != nil {
 							logging.Errorf("Worker %d: Failed to fetch content for opinion number %s: %v", id, j.opnNo, err)
-							return
+							continue
 						}
+						content = contentFetched
+						parsedCreatedAt = fetchedCreatedAtStr
 					}
 
 					agreement := inferAgreement(j.subject, content)
-
+					enumVal := DetermineAgreementEnum(isAnonymous, agreement)
 					opnID, err := strconv.ParseUint(j.opnNo, 10, 64)
 					if err != nil {
 						logging.Warnf("Invalid OpnNo format: %s", j.opnNo)
 						return
 					}
 
-					if err := db.Clauses(clause.OnConflict{UpdateAll: true}).Create(&modelLegislation.LegislativeOpinion{
-						OpnNo:       opnID,
-						BillID:      j.billID,
-						Subject:     j.subject,
-						Author:      j.author,
-						Content:     content,
-						CreatedAt:   parsedAt,
-						Agreement:   agreement,
-						IsAnonymous: isAnonymous,
+					if err := db.Clauses(clause.OnConflict{
+						Columns:   []clause.Column{{Name: "notice_id"}, {Name: "opn_no"}},
+						DoUpdates: clause.AssignmentColumns([]string{"subject", "author", "content", "created_at", "agreement"}),
+					}).Create(&modelLegislation.LegislativeOpinion{
+						OpnNo:     opnID,
+						NoticeID:  noticeID,
+						Subject:   j.subject,
+						Author:    j.author,
+						Content:   content,
+						CreatedAt: parsedCreatedAt,
+						Agreement: enumVal,
 					}).Error; err != nil {
 						logging.Errorf("Worker %d: Failed to insert/update opinion for %s: %v", id, j.opnNo, err)
 					}
@@ -279,20 +332,13 @@ func ParseAndInsertOpinionsFromDownloads(db *gorm.DB) {
 			}(workerID)
 		}
 
-		base := filepath.Base(file)
-		billID := strings.Split(base, ",")[0]
-		maxOpnNo, err := GetMaxOpnNoByBillID(db, billID)
-		if err != nil {
-			logging.Errorf("Failed to get max opnNo for %s: %v", billID, err)
-			maxOpnNo = 0
-		}
 		for _, row := range rows[1:] {
 			if len(row) < 6 {
 				continue
 			}
 			opnNoParsed, err := strconv.ParseUint(row[1], 10, 64)
 			if err != nil {
-				logging.Errorf("strconv.ParseUint failed : %v",err)
+				logging.Errorf("strconv.ParseUint failed : %v", err)
 				continue
 			}
 			if opnNoParsed <= maxOpnNo {
@@ -318,6 +364,7 @@ func ParseAndInsertOpinionsFromDownloads(db *gorm.DB) {
 	return
 }
 
+// 🔍 의견 찬반 여부 추론
 func inferAgreement(subject, content string) *bool {
 	s := strings.ToLower(subject + " " + content)
 	pos := strings.Count(s, "찬성")
@@ -336,17 +383,19 @@ func inferAgreement(subject, content string) *bool {
 	return nil
 }
 
+// 🔍 의견 익명 여부 추론
 func inferAnonymous(subject, content string) *bool {
 	s := strings.ToLower(subject + " " + content)
 	if strings.Contains(s, "[비공개]") {
 		v := true
 		return &v
-	}else{
+	} else {
 		v := false
 		return &v
 	}
 }
 
+// 🧹 bill_id 기준 최대 의견 번호 조회
 func GetMaxOpnNoByBillID(db *gorm.DB, billID string) (uint64, error) {
 	var maxOpnNo uint64
 	err := db.Model(&modelLegislation.LegislativeOpinion{}).
@@ -354,4 +403,30 @@ func GetMaxOpnNoByBillID(db *gorm.DB, billID string) (uint64, error) {
 		Select("MAX(opn_no)").
 		Scan(&maxOpnNo).Error
 	return maxOpnNo, err
+}
+
+// 🧹 notice_id 기준 최대 의견 번호 조회
+func GetMaxOpnNoByNoticeID(db *gorm.DB, noticeID uint64) (uint64, error) {
+	var maxOpnNo uint64
+	err := db.Model(&modelLegislation.LegislativeOpinion{}).
+		Where("notice_id = ?", noticeID).
+		Select("MAX(opn_no)").
+		Scan(&maxOpnNo).Error
+	return maxOpnNo, err
+}
+
+const (
+	AgreementPrivate  = "PRIVATE"
+	AgreementAgree    = "AGREE"
+	AgreementDisagree = "DISAGREE"
+)
+
+func DetermineAgreementEnum(isAnonymous *bool, isAgree *bool) string {
+	if isAnonymous != nil && *isAnonymous {
+		return AgreementPrivate
+	}
+	if isAgree != nil && *isAgree {
+		return AgreementAgree
+	}
+	return AgreementDisagree
 }

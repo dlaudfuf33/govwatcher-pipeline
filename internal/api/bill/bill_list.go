@@ -21,8 +21,8 @@ type BillListAPIResponse struct {
 type BillListHead struct {
 	Head []struct {
 		ListTotalCount int `json:"list_total_count"`
-		Result struct {
-			Code string `json:"CODE"`
+		Result         struct {
+			Code    string `json:"CODE"`
 			Message string `json:"MESSAGE"`
 		} `json:"RESULT"`
 	} `json:"head"`

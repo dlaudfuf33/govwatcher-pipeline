@@ -10,7 +10,10 @@ import (
 	"strings"
 	"time"
 
+	"gorm.io/gorm"
+
 	"gwatch-data-pipeline/internal/logging"
+	"gwatch-data-pipeline/internal/model/bill"
 )
 
 // 진행 중 입법예고 Xlsx 다운로드하는 함수
@@ -130,4 +133,12 @@ func buildDownloadRequest(csrfToken string, cookies []*http.Cookie, url string) 
 		req.AddCookie(c)
 	}
 	return req, nil
+}
+
+func GetBillEntityByNo(billNo string, db *gorm.DB) (*bill.Bill, error) {
+	var b bill.Bill
+	if err := db.Where("bill_no = ?", billNo).First(&b).Error; err != nil {
+			return nil, err
+	}
+	return &b, nil
 }

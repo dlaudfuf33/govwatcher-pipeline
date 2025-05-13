@@ -5,7 +5,6 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/PuerkitoBio/goquery"
@@ -17,7 +16,7 @@ import (
 )
 
 // MEMBER_LIST URL로 이동해 발의자 명단을 파싱하고 DB에 매핑하는 함수
-func FetchAndMatchProposers(billID string, memberListURL string, age string) ([]bill.BillPoliticianRelation, error) {
+func FetchAndMatchProposers(billID uint64, memberListURL string, age int) ([]bill.BillPoliticianRelation, error) {
 	resp, err := util.MakeRequestWithUA("GET", memberListURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch MEMBER_LIST page: %v", err)
@@ -54,9 +53,9 @@ func FetchAndMatchProposers(billID string, memberListURL string, age string) ([]
 			return
 		}
 
-		role := "공동발의"
+		role := "SUB"
 		if i == 0 {
-			role = "대표발의"
+			role = "MAIN"
 		}
 
 		relations = append(relations, bill.BillPoliticianRelation{
@@ -69,8 +68,8 @@ func FetchAndMatchProposers(billID string, memberListURL string, age string) ([]
 	return relations, nil
 }
 
-func filterPoliticianByNameAndParty(name, hanja, party, age string) (*uint64, error) {
-	billUnit, _ := strconv.Atoi(age)
+func filterPoliticianByNameAndParty(name string, hanja string, party string, age int) (*uint64, error) {
+	billUnit := age
 
 	type Candidate struct {
 		ID     uint64
@@ -82,8 +81,9 @@ func filterPoliticianByNameAndParty(name, hanja, party, age string) (*uint64, er
 
 	var candidates []Candidate
 	err := db.DB.Table("politicians AS p").
-		Select("p.id, p.mona_cd, p.hanja_name, t.unit, t.party").
+		Select("p.id, p.mona_cd, p.hanja_name, t.unit, pa.name as party").
 		Joins("JOIN politician_terms AS t ON p.id = t.politician_id").
+		Joins("LEFT JOIN parties AS pa ON t.party_id = pa.id").
 		Where("p.name = ?", name).
 		Find(&candidates).Error
 	if err != nil {

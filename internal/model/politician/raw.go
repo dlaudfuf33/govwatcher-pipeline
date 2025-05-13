@@ -9,42 +9,42 @@ import (
 
 // PoliticianRaw: 국회 API에서 직접 받아오는 필드 구조
 type PoliticianRaw struct {
-	MonaCD       string `json:"MONA_CD"`
-	HgNm         string `json:"HG_NM"`
-	HjNm         string `json:"HJ_NM"`
-	EngNm        string `json:"ENG_NM"`
-	BthDate      string `json:"BTH_DATE"`
-	SexGbnNm     string `json:"SEX_GBN_NM"`
+	MonaCD   string `json:"MONA_CD"`
+	HgNm     string `json:"HG_NM"`
+	HjNm     string `json:"HJ_NM"`
+	EngNm    string `json:"ENG_NM"`
+	BthDate  string `json:"BTH_DATE"`
+	SexGbnNm string `json:"SEX_GBN_NM"`
 
-	PolyNm       string `json:"POLY_NM"`
-	OrigNm       string `json:"ORIG_NM"`
-	ReeleGbnNm   string `json:"REELE_GBN_NM"`
-	Units        string `json:"UNITS"`
-	ElectGbnNm   string `json:"ELECT_GBN_NM"`
+	PolyNm     string `json:"POLY_NM"`
+	OrigNm     string `json:"ORIG_NM"`
+	ReeleGbnNm string `json:"REELE_GBN_NM"`
+	Units      string `json:"UNITS"`
+	ElectGbnNm string `json:"ELECT_GBN_NM"`
 
-	JobResNm     string `json:"JOB_RES_NM"`
-	CmitNm       string `json:"CMIT_NM"`
-	Cmits        string `json:"CMITS"`
+	JobResNm string `json:"JOB_RES_NM"`
+	CmitNm   string `json:"CMIT_NM"`
+	Cmits    string `json:"CMITS"`
 
-	TelNo        string `json:"TEL_NO"`
-	Email        string `json:"E_MAIL"`
-	Homepage     string `json:"HOMEPAGE"`
-	Staff        string `json:"STAFF"`
-	Secretary    string `json:"SECRETARY"`
-	Secretary2   string `json:"SECRETARY2"`
-	AssemAddr    string `json:"ASSEM_ADDR"`
+	TelNo      string `json:"TEL_NO"`
+	Email      string `json:"E_MAIL"`
+	Homepage   string `json:"HOMEPAGE"`
+	Staff      string `json:"STAFF"`
+	Secretary  string `json:"SECRETARY"`
+	Secretary2 string `json:"SECRETARY2"`
+	AssemAddr  string `json:"ASSEM_ADDR"`
 
-	MemTitle     string `json:"MEM_TITLE"`
+	MemTitle string `json:"MEM_TITLE"`
 
 	// SNS는 후처리 시에 채워질 수도 있음
-	TwitterURL   string
-	FacebookURL  string
-	YoutubeURL   string
-	BlogURL      string
+	TwitterURL  string
+	FacebookURL string
+	YoutubeURL  string
+	BlogURL     string
 }
 
 // ToEntities: PoliticianRaw → 분리된 5개 구조체로 변환
-func (r PoliticianRaw) ToEntities(unit int) (
+func (r PoliticianRaw) ToEntities(unit int, partyID uint64, committeeID uint64) (
 	Politician,
 	PoliticianTerm,
 	PoliticianContact,
@@ -52,24 +52,23 @@ func (r PoliticianRaw) ToEntities(unit int) (
 	PoliticianCareer,
 ) {
 	birthDate := parseBirthDate(r.BthDate)
-
+	gender := parseGender(r.SexGbnNm)
 	p := Politician{
-		MonaCD:     r.MonaCD,
-		Name:       r.HgNm,
-		HanjaName:  r.HjNm,
-		EngName:    r.EngNm,
-		BirthDate:  birthDate,
-		Gender:     r.SexGbnNm,
+		MonaCD:    r.MonaCD,
+		Name:      r.HgNm,
+		HanjaName: r.HjNm,
+		EngName:   r.EngNm,
+		BirthDate: birthDate,
+		Gender:    gender,
 	}
 
 	t := PoliticianTerm{
-		Unit:           unit,
-		Party:          r.PolyNm,
-		Constituency:   r.OrigNm,
-		Reelected:      r.ReeleGbnNm,
-		JobTitle:       r.JobResNm,
-		CommitteeMain:  r.CmitNm,
-		Committees:     r.Cmits,
+		Unit:         unit,
+		PartyID:      partyID,
+		Constituency: r.OrigNm,
+		Reelected:    r.ReeleGbnNm,
+		JobTitle:     r.JobResNm,
+		CommitteeID:  committeeID,
 	}
 
 	c := PoliticianContact{
@@ -94,6 +93,14 @@ func (r PoliticianRaw) ToEntities(unit int) (
 	}
 
 	return p, t, c, s, b
+}
+
+func parseGender(SexGbnNm string) string {
+	if SexGbnNm == "남" {
+		return "MALE"
+	} else {
+		return "FEMALE"
+	}
 }
 
 func parseBirthDate(raw string) *time.Time {

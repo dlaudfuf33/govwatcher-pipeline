@@ -1,36 +1,39 @@
 package bill
 
 import (
+	"strconv"
 	"strings"
 	"time"
+
+	"gwatch-data-pipeline/internal/logging"
 )
 
 type BillRaw struct {
-	BillID           string `json:"BILL_ID"`
-	BillNo           string `json:"BILL_NO"`
-	BillName         string `json:"BILL_NAME"`
-	Committee        string `json:"COMMITTEE"`
-	ProposeDate      string `json:"PROPOSE_DT"`
-	ProcResult       string `json:"PROC_RESULT"`
-	Age              string `json:"AGE"`
-	DetailLink       string `json:"DETAIL_LINK"`
-	Proposer         string `json:"PROPOSER"`
-	MemberListURL    string `json:"MEMBER_LIST"`
-	LawProcDate      string `json:"LAW_PROC_DT"`
-	LawPresentDate   string `json:"LAW_PRESENT_DT"`
-	LawSubmitDate    string `json:"LAW_SUBMIT_DT"`
-	CmtProcResultCd  string `json:"CMT_PROC_RESULT_CD"`
-	CmtProcDate      string `json:"CMT_PROC_DT"`
-	CmtPresentDate   string `json:"CMT_PRESENT_DT"`
-	CommitteeDate    string `json:"COMMITTEE_DT"`
-	ProcDate         string `json:"PROC_DT"`
-	CommitteeID      string `json:"COMMITTEE_ID"`
-	PubProposer      string `json:"PUBL_PROPOSER"`
-	RstProposer      string `json:"RST_PROPOSER"`
-	LawProcResultCd  string `json:"LAW_PROC_RESULT_CD"`
+	BillID          string `json:"BILL_ID"`
+	BillNo          string `json:"BILL_NO"`
+	Title           string `json:"BILL_NAME"`
+	Committee       string `json:"COMMITTEE"`
+	ProposeDate     string `json:"PROPOSE_DT"`
+	ProcResult      string `json:"PROC_RESULT"`
+	Age             string `json:"AGE"`
+	DetailLink      string `json:"DETAIL_LINK"`
+	Proposer        string `json:"PROPOSER"`
+	MemberListURL   string `json:"MEMBER_LIST"`
+	LawProcDate     string `json:"LAW_PROC_DT"`
+	LawPresentDate  string `json:"LAW_PRESENT_DT"`
+	LawSubmitDate   string `json:"LAW_SUBMIT_DT"`
+	CmtProcResultCd string `json:"CMT_PROC_RESULT_CD"`
+	CmtProcDate     string `json:"CMT_PROC_DT"`
+	CmtPresentDate  string `json:"CMT_PRESENT_DT"`
+	CommitteeDate   string `json:"COMMITTEE_DT"`
+	ProcDate        string `json:"PROC_DT"`
+	CommitteeID     string `json:"COMMITTEE_ID"`
+	PubProposer     string `json:"PUBL_PROPOSER"`
+	RstProposer     string `json:"RST_PROPOSER"`
+	LawProcResultCd string `json:"LAW_PROC_RESULT_CD"`
 }
 
-func (r BillRaw) ToEntity(summary string, statusSteps []string, currentStep string) (Bill, []BillStatusFlow) {
+func (r BillRaw) ToEntity(summary string, currentStep string, committeeID uint64) Bill {
 	proposeDate := parseDate(r.ProposeDate)
 	lawProcDate := parseDate(r.LawProcDate)
 	lawPresentDate := parseDate(r.LawPresentDate)
@@ -40,16 +43,18 @@ func (r BillRaw) ToEntity(summary string, statusSteps []string, currentStep stri
 	committeeDate := parseDate(r.CommitteeDate)
 	procDate := parseDate(r.ProcDate)
 
+	age, err := strconv.Atoi(r.Age)
+	if err != nil {
+		logging.Warnf("Invalid age for BillID %s: %v", r.BillID, err)
+		age = 0
+	}
+
 	entity := Bill{
 		BillID:          r.BillID,
 		BillNo:          r.BillNo,
-		Name:            r.BillName,
-		Committee:       r.Committee,
-		CommitteeID:     r.CommitteeID,
-		Age:             r.Age,
-		Proposer:        r.Proposer,
-		MainProposer:    r.RstProposer,
-		SubProposers:    r.PubProposer,
+		Title:           r.Title,
+		CommitteeID:     committeeID,
+		Age:             age,
 		ProposeDate:     proposeDate,
 		LawProcDate:     lawProcDate,
 		LawPresentDate:  lawPresentDate,
@@ -65,20 +70,7 @@ func (r BillRaw) ToEntity(summary string, statusSteps []string, currentStep stri
 		Summary:         summary,
 		CurrentStep:     currentStep,
 	}
-
-	var steps []BillStatusFlow
-	for idx, step := range statusSteps {
-		if step == "" {
-			continue
-		}
-		steps = append(steps, BillStatusFlow{
-			BillID:    r.BillID,
-			StepName:  step,       // Step → StepName
-			StepOrder: idx + 1,    // Order → StepOrder
-		})
-	}
-
-	return entity, steps
+	return entity
 }
 
 func parseDate(raw string) *time.Time {

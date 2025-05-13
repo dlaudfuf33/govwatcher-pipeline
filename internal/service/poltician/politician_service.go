@@ -9,6 +9,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	politicianAPI "gwatch-data-pipeline/internal/api/politician"
+	"gwatch-data-pipeline/internal/api/repository"
 	"gwatch-data-pipeline/internal/api/util"
 	"gwatch-data-pipeline/internal/db"
 	"gwatch-data-pipeline/internal/logging"
@@ -18,24 +19,28 @@ import (
 // 역대 의원 데이터 수집
 func ImportAllPoliticians() {
 	apiKey := util.GetNA()
-	currentUnit, err:= GetCurrentUnitFromAPI(apiKey)
+	currentUnit, err := GetCurrentUnitFromAPI(apiKey)
 	if err != nil {
 		logging.Errorf("failed to get current unit: %v", err)
 		return
 	}
-	ImportHistoricalPoliticians(apiKey,currentUnit)
+	ImportHistoricalPoliticians(apiKey, currentUnit)
 	ImportCurrentPoliticians(apiKey)
 	ImportPoliticianSNS(apiKey)
 }
 
 // 현역 국회의원 데이터 갱신
-func UpdateCurrentPoliticians(){
+func UpdateCurrentPoliticians() {
 	apiKey := util.GetNA()
 	ImportCurrentPoliticians(apiKey)
 	ImportPoliticianSNS(apiKey)
 }
 
+// 역대 국회의원 인적사항 api 호출 및 저장하는 함수
 func ImportHistoricalPoliticians(apiKey string, maxUnit int) {
+	partyCache := make(map[string]uint64)
+	committeeCache := make(map[string]uint64)
+
 	for unit := 1; unit <= maxUnit; unit++ {
 		for page := 1; ; page++ {
 			rows, err := politicianAPI.FetchHistoricalPoliticians(apiKey, fmt.Sprintf("1000%02d", unit), page, 100)
@@ -52,20 +57,45 @@ func ImportHistoricalPoliticians(apiKey string, maxUnit int) {
 			logging.Debugf("📦 [Unit %d] Page %d: Received %d records", unit, page, len(rows))
 
 			for _, raw := range rows {
-				p, t, _, _, _ := raw.ToEntities(unit)
-				logging.Debugf("👤 Attempting to save: (MonaCD : %s)",p.MonaCD)
+				var partyID uint64
+				if id, ok := partyCache[raw.PolyNm]; ok {
+					partyID = id
+				} else {
+					id, err := repository.GetOrCreateParty(db.DB, raw.PolyNm)
+					if err != nil {
+						logging.Errorf("Failed to lookup party %s: %v", raw.PolyNm, err)
+						continue
+					}
+					partyCache[raw.PolyNm] = id
+					partyID = id
+				}
+
+				var committeeID uint64
+				if id, ok := committeeCache[raw.CmitNm]; ok {
+					committeeID = id
+				} else {
+					id, err := repository.GetOrCreateCommittee(db.DB, raw.CmitNm)
+					if err != nil {
+						logging.Errorf("Failed to lookup committee %s: %v", raw.CmitNm, err)
+						committeeID = 0 // fallback
+					}
+					committeeCache[raw.CmitNm] = id
+					committeeID = id
+				}
+
+				p, t, _, _, _ := raw.ToEntities(unit, partyID, committeeID)
+				logging.Debugf("👤 Attempting to save: (MonaCD : %s)", p.MonaCD)
 
 				upsertPolitician(&p)
 
-				// If ID is missing, try to fetch it
 				if p.ID == 0 {
 					if err := db.DB.Where("mona_cd = ?", p.MonaCD).First(&p).Error; err != nil {
-						logging.Errorf("[Failed to fetch ID] (MonaCD : %s)",p.MonaCD)
+						logging.Errorf("[Failed to fetch ID] (MonaCD : %s)", p.MonaCD)
 						continue
 					}
 				}
-				logging.Debugf("Successfully saved: (%s : %d)",p.MonaCD, p.ID)
-				
+				logging.Debugf("Successfully saved: (%s : %d)", p.MonaCD, p.ID)
+
 				t.PoliticianID = p.ID
 				upsertTerm(&t)
 			}
@@ -73,12 +103,16 @@ func ImportHistoricalPoliticians(apiKey string, maxUnit int) {
 	}
 }
 
+// 현역 국회의원 인적사항 api 호출 및 저장하는 함수
 func ImportCurrentPoliticians(apiKey string) {
-	knownCurrentUnit,err := GetCurrentUnitFromAPI(apiKey)
-	if err!=nil{
-		logging.Errorf("%v",err)
+	knownCurrentUnit, err := GetCurrentUnitFromAPI(apiKey)
+	if err != nil {
+		logging.Errorf("%v", err)
 	}
-	logging.Debugf("start %d",knownCurrentUnit)
+	logging.Debugf("start %d", knownCurrentUnit)
+	partyCache := make(map[string]uint64)
+	committeeCache := make(map[string]uint64)
+
 	for page := 1; ; page++ {
 		rows, err := politicianAPI.FetchCurrentPoliticians(apiKey, page, 100)
 		if err != nil {
@@ -94,17 +128,42 @@ func ImportCurrentPoliticians(apiKey string) {
 			unitInt := 0
 			if len(units) > 0 {
 				unitInt, _ = strconv.Atoi(units[len(units)-1])
-			}else {
+			} else {
 				unitInt = knownCurrentUnit
-				logging.Warnf("fallback unit used for (%s): defaulted to %d",raw.MonaCD, unitInt)
+				logging.Warnf("fallback unit used for (%s): defaulted to %d", raw.MonaCD, unitInt)
 			}
 			if unitInt == 0 {
 				logging.Warnf("⚠️ Unable to extract valid unit from raw.Units: %s (MonaCD: %s)", raw.Units, raw.MonaCD)
 			}
-		
-			p, t, c, _, b := raw.ToEntities(unitInt)
-		
-		
+
+			var partyID uint64
+			if id, ok := partyCache[raw.PolyNm]; ok {
+				partyID = id
+			} else {
+				id, err := repository.GetOrCreateParty(db.DB, raw.PolyNm)
+				if err != nil {
+					logging.Errorf("Failed to lookup party %s: %v", raw.PolyNm, err)
+					continue
+				}
+				partyCache[raw.PolyNm] = id
+				partyID = id
+			}
+
+			var committeeID uint64
+			if id, ok := committeeCache[raw.CmitNm]; ok {
+				committeeID = id
+			} else {
+				id, err := repository.GetOrCreateCommittee(db.DB, raw.CmitNm)
+				if err != nil {
+					logging.Errorf("Failed to lookup committee %s: %v", raw.CmitNm, err)
+					committeeID = 0
+				}
+				committeeCache[raw.CmitNm] = id
+				committeeID = id
+			}
+
+			p, t, c, _, b := raw.ToEntities(unitInt, partyID, committeeID)
+
 			upsertPolitician(&p)
 			if err := db.DB.Where("mona_cd = ?", p.MonaCD).First(&p).Error; err != nil {
 				continue
@@ -119,9 +178,10 @@ func ImportCurrentPoliticians(apiKey string) {
 			upsertCareer(&b)
 		}
 	}
-	logging.Infof("end %d",knownCurrentUnit)
+	logging.Infof("end %d", knownCurrentUnit)
 }
 
+// 국회의원 SNS api 호출 및 저장하는 함수
 func ImportPoliticianSNS(apiKey string) {
 	for page := 1; ; page++ {
 		snsRows, err := politicianAPI.FetchPoliticianSNS(apiKey, page, 100)
@@ -190,7 +250,6 @@ func upsertTerm(t *politician.PoliticianTerm) {
 		logging.Warnf("No term row affected for %d (unit %d)", t.PoliticianID, t.Unit)
 	}
 }
-
 
 func upsertContact(c *politician.PoliticianContact) {
 	db.DB.Clauses(clause.OnConflict{

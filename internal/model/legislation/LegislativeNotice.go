@@ -3,13 +3,13 @@ package model
 import "time"
 
 type LegislativeNotice struct {
-	ID            uint   `gorm:"primaryKey"`
-	BillID        string `gorm:"uniqueIndex"`
-	StartDate     time.Time
-	EndDate       time.Time
-	CommentsURL   string
-	CommentsCount int
-	ViewCount     int
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	ID           uint64 `gorm:"primaryKey"`
+	BillID       uint64 `gorm:"not null;index;column:bill_id"`
+	StartDate    *time.Time
+	EndDate      *time.Time
+	OpinionUrl   string
+	OpinionCount int
+	Views        int
+	CreatedAt    time.Time `gorm:"autoCreateTime"`
+	UpdatedAt    time.Time `gorm:"autoUpdateTime"`
 }

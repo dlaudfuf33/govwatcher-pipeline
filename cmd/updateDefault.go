@@ -3,6 +3,7 @@ package cmd
 import (
 	"github.com/spf13/cobra"
 
+	legislationAPI "gwatch-data-pipeline/internal/api/legislation"
 	"gwatch-data-pipeline/internal/db"
 	"gwatch-data-pipeline/internal/service/bill"
 	"gwatch-data-pipeline/internal/service/legislation"
@@ -18,6 +19,7 @@ var updateDefaultCmd = &cobra.Command{
 
 		poltician.UpdateCurrentPoliticians()
 		bill.UpdateCurrentBills()
+		legislationAPI.DownloadLegislativeListXlsx()
 		legislation.ImportNoticePeriodsFromList(db.DB)
 		legislation.ImportOpinionCommentsFromLatestFile(db.DB)
 		legislation.ParseAndInsertOpinionsFromDownloads(db.DB)

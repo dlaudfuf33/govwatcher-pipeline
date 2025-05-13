@@ -3,13 +3,12 @@ package model
 import "time"
 
 type LegislativeOpinion struct {
-	ID          uint64     `gorm:"primaryKey;autoIncrement"`
-	BillID      string     `gorm:"not null;"`
-	OpnNo       uint64
-	Subject     string
-	Content     string
-	Author      string
-	CreatedAt   time.Time
-	IsAnonymous *bool
-	Agreement   *bool
+	ID        uint64 `gorm:"primaryKey;autoIncrement"`
+	NoticeID  uint64 `gorm:"not null;index"` // Fk LegislativeNotice.ID
+	OpnNo     uint64 `gorm:"index"`
+	Subject   string `gorm:"type:text"`
+	Content   string `gorm:"type:text"`
+	Author    string
+	Agreement string
+	CreatedAt time.Time `gorm:"autoCreateTime"`
 }

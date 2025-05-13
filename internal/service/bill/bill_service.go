@@ -9,34 +9,38 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
 	billAPI "gwatch-data-pipeline/internal/api/bill"
 	polticianAPI "gwatch-data-pipeline/internal/api/politician"
+	"gwatch-data-pipeline/internal/api/repository"
 	"gwatch-data-pipeline/internal/api/util"
 	"gwatch-data-pipeline/internal/db"
 	"gwatch-data-pipeline/internal/logging"
 	"gwatch-data-pipeline/internal/model/bill"
 )
+
 type ImportStats struct {
-	TotalFetched   int64
-	ProcessedOK    int64
-	ProcessedFail  int64
+	TotalFetched  int64
+	ProcessedOK   int64
+	ProcessedFail int64
 }
 
+// 현재 대수 국회의원발의법안 업데이트
 func UpdateCurrentBills() {
 	apiKey := util.GetNA()
 
 	// 현재 대수 가져오기
 	currentAge, err := GetCurrentUnitFromAPI(apiKey)
 	if err != nil {
-		logging.Errorf("UpdateCurrentBills failed %v",err)
+		logging.Errorf("UpdateCurrentBills failed %v", err)
 	}
 
 	// 전체 법안 수 가져오기
 	totalCount, err := billAPI.FetchTotalBillCount(apiKey, strconv.Itoa(currentAge))
 	if err != nil {
-		logging.Errorf("UpdateCurrentBills failed %v",err)
+		logging.Errorf("UpdateCurrentBills failed %v", err)
 	}
 
 	// 총 페이지 수 계산
@@ -45,11 +49,10 @@ func UpdateCurrentBills() {
 	// 법안 데이터 수집
 	stats, err := ImportBills(apiKey, strconv.Itoa(currentAge), totalPages, 100, 5, 30)
 	if err != nil {
-		logging.Errorf("UpdateCurrentBills failed %v",err)
+		logging.Errorf("UpdateCurrentBills failed %v", err)
 	}
-	logging.Debugf("UpdateCurrentBills %v",stats)
+	logging.Debugf("UpdateCurrentBills %v", stats)
 }
-
 
 func UpdateCurrentBillsHttp(apiKey string, result chan<- string) {
 	// 현재 대수 가져오기
@@ -81,7 +84,7 @@ func UpdateCurrentBillsHttp(apiKey string, result chan<- string) {
 	result <- fmt.Sprintf("Age %s: %d bills processed, %d failed", strconv.Itoa(currentAge), stats.ProcessedOK, stats.ProcessedFail)
 }
 
-
+// 국회의원발의법안
 func ImportAllBills() {
 	apiKey := util.GetNA()
 
@@ -144,7 +147,8 @@ func ImportBills(apiKey string, age string, maxPage int, pageSize int, apiWorker
 			defer dbWg.Done()
 			for r := range billRowCh {
 				logging.Debugf("[DB worker=%d] Processing bill %s", workerID, r.BillID)
-				err := processBillRowWithError(r, age)
+				ageNum, _ := strconv.Atoi(age)
+				err := processBillRowWithError(r, ageNum)
 				if err != nil {
 					// 실패한 항목 카운트
 					atomic.AddInt64(&stats.ProcessedFail, 1)
@@ -180,7 +184,7 @@ func ImportBills(apiKey string, age string, maxPage int, pageSize int, apiWorker
 
 	return &stats, nil
 }
-	
+
 func parseStepLog(stepLog string) []string {
 	if stepLog == "" {
 		return []string{}
@@ -201,8 +205,7 @@ func SplitAndTrim(s string, sep string) []string {
 	return out
 }
 
-
-func processBillRowWithError(r bill.BillRaw, age string) error {
+func processBillRowWithError(r bill.BillRaw, age int) error {
 	// 패닉 처리
 	defer func() {
 		if r := recover(); r != nil {
@@ -218,12 +221,13 @@ func processBillRowWithError(r bill.BillRaw, age string) error {
 	return err
 }
 
+func processBillRow(r bill.BillRaw, age int) error {
+	logging.Infof("📄 Processing bill: %s (%s)", r.BillID, r.Title)
 
-func processBillRow(r bill.BillRaw, age string) error {
-	logging.Infof("📄 Processing bill: %s (%s)", r.BillID, r.BillName)
 	summary := ""
 	stepLog := ""
 	currentStep := ""
+
 	// 1. 상세 페이지 존재 여부 확인
 	if strings.TrimSpace(r.DetailLink) != "" {
 		var err error
@@ -235,37 +239,63 @@ func processBillRow(r bill.BillRaw, age string) error {
 	} else {
 		logging.Warnf("No DetailLink for bill_id=%s, skipping detail fetch", r.BillID)
 	}
-
-	// 2. 모델 변환
-	billEntity, statusFlows := r.ToEntity(summary, parseStepLog(stepLog), currentStep)
-	// 🧩 Age는 외부에서 전달받은 파라미터로 직접 설정
-	billEntity.Age = age
-	// 3. DB 저장 (bill + status flows)
-	upsertBill(&billEntity);
-	for _, step := range statusFlows {
-		upsertBillStep(&step);
+	committeeID, err := repository.GetOrCreateCommittee(db.DB, r.Committee)
+	if err != nil {
+		logging.Errorf("Committee lookup failed: %v", err)
+		committeeID = 0
 	}
 
-	// 4. 제안자 크롤링 및 저장
+	// 2. 모델 변환
+	billEntity := r.ToEntity(summary, currentStep, committeeID)
+
+	// Age는 외부에서 전달받은 파라미터로 직접 설정
+	billEntity.Age = age
+
+	// 3. billEntity 먼저 저장
+	upsertBill(&billEntity)
+
+	// 4. billEntity.ID를 BillStatusFlow에 채워서 생성
+	var statusFlows []bill.BillStatusFlow
+	for idx, step := range parseStepLog(stepLog) {
+		if step == "" {
+			continue
+		}
+		statusFlows = append(statusFlows, bill.BillStatusFlow{
+			BillID:    billEntity.ID,
+			StepOrder: idx + 1,
+			StepName:  step,
+		})
+	}
+
+	// 5. statusFlows 저장
+	for _, flow := range statusFlows {
+		upsertBillStep(&flow)
+	}
+
+	// 6. 제안자 크롤링 및 저장
 	if r.MemberListURL != "" {
-		relations, err := billAPI.FetchAndMatchProposers(r.BillID, r.MemberListURL, age)
+		relations, err := billAPI.FetchAndMatchProposers(billEntity.ID, r.MemberListURL, age)
 		if err != nil {
 			logging.Warnf("failed to match proposers: %v", err)
 			return err
 		}
 		for _, rel := range relations {
-			// upsertRelation은 반환값이 없고, 에러가 발생한 경우에만 처리하도록 수정
 			upsertRelation(&rel)
 		}
 	}
+
 	return nil
 }
 
 // Upsert
 func upsertBill(b *bill.Bill) {
 	res := db.DB.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "bill_id"}},
-		UpdateAll: true,
+		Columns: []clause.Column{{Name: "bill_id"}},
+		DoUpdates: clause.Assignments(map[string]interface{}{
+			"result":       gorm.Expr("CASE WHEN bills.result IS DISTINCT FROM excluded.result THEN excluded.result ELSE bills.result END"),
+			"current_step": gorm.Expr("CASE WHEN bills.current_step IS DISTINCT FROM excluded.current_step THEN excluded.current_step ELSE bills.current_step END"),
+			"updated_at":   gorm.Expr("NOW()"),
+		}),
 	}).Create(b)
 
 	if res.Error != nil {
@@ -275,8 +305,14 @@ func upsertBill(b *bill.Bill) {
 
 func upsertBillStep(s *bill.BillStatusFlow) {
 	res := db.DB.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "bill_id"}, {Name: "step_order"}},
-		UpdateAll: true,
+		Columns: []clause.Column{
+			{Name: "bill_id"},
+			{Name: "step_order"},
+		},
+		DoUpdates: clause.Assignments(map[string]interface{}{
+			"step_name":  gorm.Expr("CASE WHEN bill_status_flows.step_name IS DISTINCT FROM excluded.step_name THEN excluded.step_name ELSE bill_status_flows.step_name END"),
+			"updated_at": gorm.Expr("NOW()"),
+		}),
 	}).Create(s)
 
 	if res.Error != nil {
@@ -286,8 +322,15 @@ func upsertBillStep(s *bill.BillStatusFlow) {
 
 func upsertRelation(r *bill.BillPoliticianRelation) {
 	res := db.DB.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "bill_id"}, {Name: "politician_id"}, {Name: "role"}},
-		UpdateAll: true,
+		Columns: []clause.Column{
+			{Name: "bill_id"},
+			{Name: "politician_id"},
+			{Name: "role"},
+		},
+		DoUpdates: clause.Assignments(map[string]interface{}{
+			"role":       gorm.Expr("CASE WHEN bill_politician_relations.role IS DISTINCT FROM excluded.role THEN excluded.role ELSE bill_politician_relations.role END"),
+			"updated_at": gorm.Expr("NOW()"),
+		}),
 	}).Create(r)
 
 	if res.Error != nil {
@@ -310,8 +353,8 @@ func GetCurrentUnitFromAPI(apiKey string) (int, error) {
 	}
 
 	// "제22대"와 같은 문자열에서 숫자만 추출
-	re := regexp.MustCompile(`\d+`)  // 숫자만 추출하는 정규 표현식
-	unitStr := re.FindString(politicians[0].Units)  // "22" 추출
+	re := regexp.MustCompile(`\d+`)                // 숫자만 추출하는 정규 표현식
+	unitStr := re.FindString(politicians[0].Units) // "22" 추출
 
 	if unitStr == "" {
 		return 0, fmt.Errorf("failed to extract unit number from: %v", politicians[0].Units)
