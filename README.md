@@ -111,8 +111,4 @@ go run cmd/govwatch/main.go update3d
 go run cmd/govwatch/main.go update7d
 ```
 
----
 
-## 🐳 Docker 및 Kubernetes (선택)
-
-Docker / K8s 환경 배포는 추후 지원 예정입니다. 현재는 CLI 또는 크론탭 기반 배치 실행에 최적화되어 있습니다.
