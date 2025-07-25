@@ -11,6 +11,6 @@ func main() {
 	if err := godotenv.Load(); err != nil {
 		logging.Warnf("Failed load .env file : %v", err)
 	}
-	
+
 	cmd.Execute()
 }

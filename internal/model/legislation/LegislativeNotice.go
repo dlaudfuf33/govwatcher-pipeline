@@ -9,7 +9,6 @@ type LegislativeNotice struct {
 	EndDate      *time.Time
 	OpinionUrl   string
 	OpinionCount int
-	Views        int
 	CreatedAt    time.Time `gorm:"autoCreateTime"`
 	UpdatedAt    time.Time `gorm:"autoUpdateTime"`
 }
